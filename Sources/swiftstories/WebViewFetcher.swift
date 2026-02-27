@@ -31,6 +31,41 @@ final class WebViewFetcher: NSObject {
     /// Final return value for `fetchStoryURLs(from:)`.
     private var result: (items: [(url: String, isVideo: Bool)], html: String) = ([], "")
 
+    /// JavaScript injected at document start to silence all media playback.
+    ///
+    /// The scraper still reads media URLs and downloads assets, but no audio is emitted
+    /// while pages/videos are being loaded in the hidden web view.
+    private static let muteMediaScript = """
+    (function() {
+      if (window.__swiftstoriesMuteInstalled) return;
+      window.__swiftstoriesMuteInstalled = true;
+
+      function silence(el) {
+        if (!el) return;
+        try { el.muted = true; } catch (_) {}
+        try { el.defaultMuted = true; } catch (_) {}
+        try { el.volume = 0; } catch (_) {}
+        try { el.setAttribute('muted', 'muted'); } catch (_) {}
+      }
+
+      function silenceAll() {
+        document.querySelectorAll('video, audio').forEach(silence);
+      }
+
+      var nativePlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function() {
+        silence(this);
+        return nativePlay.apply(this, arguments);
+      };
+
+      document.addEventListener('play', function(e) { silence(e.target); }, true);
+      silenceAll();
+
+      var observer = new MutationObserver(function() { silenceAll(); });
+      observer.observe(document.documentElement || document, { childList: true, subtree: true });
+    })();
+    """
+
     /// Normalizes provider-specific media URL variants to a canonical key.
     /// - Parameter url: Raw media URL.
     /// - Returns: Canonicalized key used for deduplication.
@@ -155,6 +190,13 @@ final class WebViewFetcher: NSObject {
     private func setupAndLoad(url: URL) {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        config.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.muteMediaScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
 
         let prefs = WKWebpagePreferences()
         prefs.allowsContentJavaScript = true
