@@ -4,8 +4,6 @@
 
 It uses anonymous public story-viewer backends and saves media to local folders.
 
-Written by Dominic Tristram.
-
 ## Features
 
 - Download stories with one command
@@ -20,6 +18,14 @@ Written by Dominic Tristram.
 - macOS 13 or newer
 - Swift 5.9+
 - Internet connection
+
+## Download
+
+Clone the repository
+
+```bash
+git clone https://github.com/dominictristram/swiftstories.git
+```
 
 ## Build
 
