@@ -4,6 +4,8 @@
 
 It uses anonymous public story-viewer backends and saves media to local folders.
 
+Written by Dominic Tristram.
+
 ## Features
 
 - Download stories with one command
@@ -121,4 +123,6 @@ users/<username>/stories/
 
 ## License
 
-Add your preferred license in a `LICENSE` file.
+Released under the GNU General Public License v3.0 (GPL-3.0).
+
+License text: https://www.gnu.org/licenses/gpl-3.0.en.html
