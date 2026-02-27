@@ -5,20 +5,39 @@ import SwiftSoup
 
 // MARK: - ANSI Colors
 
+/// Provides ANSI escape sequences and convenience printers for terminal output.
 enum ANSI {
+    /// Red terminal color code.
     static let red = "\u{001B}[31m"
+    /// Yellow terminal color code.
     static let yellow = "\u{001B}[33m"
+    /// Green terminal color code.
     static let green = "\u{001B}[32m"
+    /// Terminal reset color code.
     static let reset = "\u{001B}[0m"
 
+    /// Prints a message in red.
+    /// - Parameter msg: Message text to print.
     static func printRed(_ msg: String) { print("\(red)\(msg)\(reset)") }
+    /// Prints a message in yellow.
+    /// - Parameter msg: Message text to print.
     static func printYellow(_ msg: String) { print("\(yellow)\(msg)\(reset)") }
+    /// Prints a message in green.
+    /// - Parameter msg: Message text to print.
     static func printGreen(_ msg: String) { print("\(green)\(msg)\(reset)") }
 }
 
 // MARK: - SSL Bypass Delegate
 
+/// Accepts server-trust challenges without certificate validation.
+///
+/// This is used to tolerate backend certificate issues from mirror providers.
 final class InsecureDelegate: NSObject, URLSessionDelegate {
+    /// Handles TLS authentication challenges by trusting the provided server certificate.
+    /// - Parameters:
+    ///   - session: URL session issuing the challenge.
+    ///   - challenge: Authentication challenge details.
+    ///   - completionHandler: Callback for challenge disposition and optional credential.
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
@@ -36,13 +55,24 @@ final class InsecureDelegate: NSObject, URLSessionDelegate {
 
 // MARK: - Directories
 
+/// Computes and manages destination directories for downloaded media.
 struct Directories {
+    /// Instagram username for this download run.
     let username: String
+    /// Root output path (defaults to `users`).
     let rootPath: String
+    /// Path for this user under the root output path.
     let userPath: String
+    /// Path where highlight folders are created.
     let highlightsPath: String
+    /// Path where stories are saved.
     let storiesPath: String
 
+    /// Creates directory paths for a user.
+    /// - Parameters:
+    ///   - username: Instagram username being processed.
+    ///   - output: Optional custom output directory.
+    ///   - chaos: Whether stories should skip date-based subfolders.
     init(username: String, output: String?, chaos: Bool) {
         self.username = username
         rootPath = output ?? "users"
@@ -60,6 +90,10 @@ struct Directories {
         }
     }
 
+    /// Ensures required output directories exist.
+    /// - Parameters:
+    ///   - stories: Whether to create the stories directory.
+    ///   - highlights: Whether to create the highlights directory.
     func create(stories: Bool, highlights: Bool) {
         let fm = FileManager.default
         func ensureDir(_ path: String) {
@@ -73,6 +107,7 @@ struct Directories {
         if highlights { ensureDir(highlightsPath) }
     }
 
+    /// Removes the stories directory when it exists but contains no files.
     func removeEmptyStoriesDir() {
         let fm = FileManager.default
         let absPath = (storiesPath as NSString).standardizingPath
@@ -83,14 +118,29 @@ struct Directories {
 
 // MARK: - Content
 
+/// Encapsulates backend parsing and media download operations for one user.
 final class Content {
+    /// Instagram username being fetched.
     let username: String
+    /// Base URL for the configured backend API.
     let api: String
+    /// Default user stories link for non-WebView backends.
     var userLink: String { "\(api)/stories/\(username)" }
+    /// HTML payload for the user page.
     let rootPage: String
+    /// Derived output directories for this user.
     let directories: Directories
+    /// URL session used for all network requests.
     private let session: URLSession
 
+    /// Creates content helpers for one user.
+    /// - Parameters:
+    ///   - username: Instagram username.
+    ///   - rootPage: Initial HTML page content.
+    ///   - api: Backend API base URL.
+    ///   - output: Optional output root path.
+    ///   - chaos: Whether to store stories without date subfolder.
+    ///   - session: URL session to use for requests.
     init(username: String, rootPage: String, api: String, output: String?, chaos: Bool, session: URLSession) {
         self.username = username
         self.rootPage = rootPage
@@ -103,6 +153,8 @@ final class Content {
     var storiesPath: String { directories.storiesPath }
     var highlightsPath: String { directories.highlightsPath }
 
+    /// Validates whether the target account appears to exist and be public.
+    /// - Returns: `true` when account status allows downloading; otherwise `false`.
     func exists() -> Bool {
         if rootPage.contains("This username doesn't exist. Please try with another one.") {
             let igURL = "https://www.instagram.com/\(username)"
@@ -126,6 +178,8 @@ final class Content {
         return true
     }
 
+    /// Extracts story media URLs from the initial page.
+    /// - Returns: A list of media URLs, or `nil` when no stories are available.
     func getStories() -> [String]? {
         if rootPage.contains("No stories available. Please try again later.") {
             ANSI.printYellow("\n[!] Whoops! \(username) did not post any recent stories")
@@ -139,6 +193,8 @@ final class Content {
         return Self.parsingContent(rootPage, apiBase: api)
     }
 
+    /// Downloads all discovered story items to disk.
+    /// - Parameter storiesPool: Story media URLs annotated with video metadata.
     func downloadStories(_ storiesPool: [(url: String, isVideo: Bool)]) {
         let rootStoriesPath = (userPath as NSString).appendingPathComponent("stories")
         let total = storiesPool.count
@@ -204,6 +260,8 @@ final class Content {
         print("")
     }
 
+    /// Extracts highlight group links and display names from the page HTML.
+    /// - Returns: Dictionary of highlight page URL to local folder name.
     func getHighlights() -> [String: String]? {
         guard let doc = try? SwiftSoup.parse(rootPage) else { return nil }
         // div with class starting with "highlight "
@@ -250,6 +308,12 @@ final class Content {
         return result
     }
 
+    /// Downloads all media for a single highlight group.
+    /// - Parameters:
+    ///   - group: Highlight page URL.
+    ///   - name: Folder name for this highlight.
+    ///   - start: 1-based index of this highlight in the total list.
+    ///   - end: Total number of highlights being downloaded.
     func downloadHighlights(group: String, name: String, start: Int, end: Int) {
         guard let url = URL(string: group),
               let (data, _) = try? session.synchronousData(from: url),
@@ -275,6 +339,11 @@ final class Content {
         print("")
     }
 
+    /// Parses media URLs from backend HTML response content.
+    /// - Parameters:
+    ///   - page: Raw HTML page content.
+    ///   - apiBase: Backend API base URL.
+    /// - Returns: Ordered list of media URLs.
     static func parsingContent(_ page: String, apiBase: String) -> [String] {
         var contentLinks: [String] = []
         guard let doc = try? SwiftSoup.parse(page) else { return contentLinks }
@@ -317,6 +386,9 @@ final class Content {
         return contentLinks
     }
 
+    /// Parses story tile metadata from `insta-stories-viewer` page markup.
+    /// - Parameter page: Raw HTML page content.
+    /// - Returns: Unique story URLs paired with inferred video flag.
     static func parsingViewerStoryItems(_ page: String) -> [(url: String, isVideo: Bool)] {
         var items: [(url: String, isVideo: Bool)] = []
         guard let doc = try? SwiftSoup.parse(page) else { return items }
@@ -334,6 +406,12 @@ final class Content {
         return items
     }
 
+    /// Computes a local filename for a downloaded media item.
+    /// - Parameters:
+    ///   - link: Original media link.
+    ///   - index: Zero-based position in the current download list.
+    ///   - response: HTTP response used to infer content type.
+    /// - Returns: Filename with extension.
     static func filename(for link: String, index: Int, response: URLResponse?) -> String {
         let pathComponent = (link as NSString).lastPathComponent
         if pathComponent.contains("."), !pathComponent.hasPrefix("img.") {
@@ -351,6 +429,11 @@ final class Content {
         return String(format: "story_%03d.%@", index + 1, ext)
     }
 
+    /// Checks whether a filename already exists in a target directory tree.
+    /// - Parameters:
+    ///   - filename: Candidate filename.
+    ///   - path: Root path to inspect.
+    /// - Returns: `true` if no existing file uses the same name.
     static func validate(filename: String, inPath path: String) -> Bool {
         let fm = FileManager.default
         var existingFiles: Set<String> = []
@@ -368,13 +451,19 @@ final class Content {
 
 // MARK: - HTTP Helpers
 
+/// Browser-like HTTP headers used for requests to scraping backends.
 private let browserHeaders: [String: String] = [
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 ]
 
+/// Provides blocking wrappers around URLSession request APIs.
 extension URLSession {
+    /// Performs a blocking HTTP request for a URL using default browser headers.
+    /// - Parameter url: Target URL.
+    /// - Returns: Response data and URL response.
+    /// - Throws: Request or transport errors.
     func synchronousData(from url: URL) throws -> (Data, URLResponse) {
         var request = URLRequest(url: url)
         for (key, value) in browserHeaders {
@@ -383,6 +472,10 @@ extension URLSession {
         return try synchronousData(from: request)
     }
 
+    /// Performs a blocking HTTP request for a URLRequest.
+    /// - Parameter request: Fully configured request.
+    /// - Returns: Response data and URL response.
+    /// - Throws: Request or transport errors.
     func synchronousData(from request: URLRequest) throws -> (Data, URLResponse) {
         var result: (Data, URLResponse)?
         var requestError: Error?
@@ -405,33 +498,44 @@ extension URLSession {
 
 // MARK: - CLI
 
+/// Command-line entrypoint and argument parsing for `swiftstories`.
 struct SwiftstoriesCommand: ParsableCommand {
+    /// CLI metadata shown in generated help output.
     static let configuration = CommandConfiguration(
         commandName: "swiftstories",
         abstract: "Download Instagram stories or highlights anonymously"
     )
 
+    /// One or more Instagram usernames to process.
     @Option(name: [.short, .long], parsing: .singleValue, help: "Instagram username(s)")
     var users: [String] = []
 
+    /// Enables story download workflow.
     @Flag(name: [.short, .long], help: "Download stories")
     var stories: Bool = false
 
+    /// Enables highlight download workflow.
     @Flag(name: [.long, .customShort("H")], help: "Download highlights")
     var highlights: Bool = false
 
+    /// Custom root output directory.
     @Option(name: [.short, .long], help: "Directory for data storage")
     var output: String?
 
+    /// Backend API base URL.
     @Option(name: .long, help: "Backend API base URL")
     var api: String = "https://insta-stories-viewer.com"
 
+    /// Stores stories in a single folder instead of date partitioning.
     @Flag(name: [.short, .long], help: "Save stories in one directory")
     var chaos: Bool = false
 
+    /// Writes fetched HTML to `/tmp/swiftstories_debug.html`.
     @Flag(name: .long, help: "Save page HTML to /tmp/swiftstories_debug.html for debugging")
     var debug: Bool = false
 
+    /// Validates required CLI arguments before command execution.
+    /// - Throws: `ValidationError` when required options are missing.
     mutating func validate() throws {
         guard !users.isEmpty else {
             throw ValidationError("At least one username is required. Use -u or --users.")
@@ -441,6 +545,8 @@ struct SwiftstoriesCommand: ParsableCommand {
         }
     }
 
+    /// Runs the full download workflow for all requested users.
+    /// - Throws: Propagates command-level failures surfaced by ArgumentParser.
     func run() throws {
         let delegate = InsecureDelegate()
         let config = URLSessionConfiguration.default

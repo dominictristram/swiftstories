@@ -5,16 +5,28 @@ import WebKit
 /// Fetches a page using WKWebView, waits for JavaScript to execute, and extracts story URLs.
 /// Must be called from a background thread; WebView runs on main.
 final class WebViewFetcher: NSObject {
+    /// Headless web view used for script-driven extraction.
     private var webView: WKWebView!
+    /// Off-screen window required to host the web view.
     private var window: NSWindow!
+    /// Signals when the initial page load finishes or fails.
     private let loadSem = DispatchSemaphore(value: 0)
+    /// Signals when a single extraction pass completes.
     private let extractSem = DispatchSemaphore(value: 0)
+    /// Accumulates extracted story items across scraping phases.
     private var extractedItems: [(url: String, isVideo: Bool)] = []
+    /// Stores latest HTML snapshot for debug and fallback parsing.
     private var extractedHTML: String = ""
+    /// Captures navigation/load failures.
     private var loadError: Error?
+    /// Signals when final results are ready to return.
     private let resultSem = DispatchSemaphore(value: 0)
+    /// Final return value for `fetchStoryURLs(from:)`.
     private var result: (items: [(url: String, isVideo: Bool)], html: String) = ([], "")
 
+    /// Normalizes provider-specific media URL variants to a canonical key.
+    /// - Parameter url: Raw media URL.
+    /// - Returns: Canonicalized key used for deduplication.
     private static func canonicalStoryKey(for url: String) -> String {
         var normalized = url
         for suffix in ["", "2", "3", "4", "5", "6"] {
@@ -24,6 +36,10 @@ final class WebViewFetcher: NSObject {
         return normalized
     }
 
+    /// Merges an extracted story candidate while preserving preferred video links.
+    /// - Parameters:
+    ///   - url: Story media URL.
+    ///   - isVideo: Whether the item should be treated as video.
     private func mergeExtractedItem(url: String, isVideo: Bool) {
         guard !url.isEmpty else { return }
 
@@ -49,6 +65,8 @@ final class WebViewFetcher: NSObject {
     }
 
     /// Call from background thread. Returns (story items with video flag, page HTML).
+    /// - Parameter url: User page URL to load.
+    /// - Returns: Extracted story items plus final page HTML.
     func fetchStoryURLs(from url: URL) -> (items: [(url: String, isVideo: Bool)], html: String) {
         DispatchQueue.main.async { [weak self] in
             self?.setupAndLoad(url: url)
@@ -113,6 +131,10 @@ final class WebViewFetcher: NSObject {
         return result
     }
 
+    /// Stores final extraction result and schedules web view cleanup.
+    /// - Parameters:
+    ///   - items: Story items to return.
+    ///   - html: Last captured page HTML.
     private func finish(_ items: [(url: String, isVideo: Bool)], _ html: String) {
         result = (items, html)
         resultSem.signal()
@@ -121,6 +143,8 @@ final class WebViewFetcher: NSObject {
         }
     }
 
+    /// Configures an off-screen WKWebView and begins loading the target URL.
+    /// - Parameter url: URL to open in the web view.
     private func setupAndLoad(url: URL) {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
@@ -149,6 +173,7 @@ final class WebViewFetcher: NSObject {
         webView.load(URLRequest(url: url))
     }
 
+    /// Attempts to open the profile viewer by clicking avatar elements.
     private func clickProfileAvatar() {
         let script = """
         (function() {
@@ -162,6 +187,7 @@ final class WebViewFetcher: NSObject {
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
 
+    /// Selects the stories tab so story tiles become visible.
     private func clickStoriesTab() {
         let script = """
         (function() {
@@ -175,6 +201,7 @@ final class WebViewFetcher: NSObject {
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
 
+    /// Advances the story viewer popup to the next story item.
     private func clickNextStory() {
         webView?.evaluateJavaScript("""
             (function() {
@@ -202,6 +229,7 @@ final class WebViewFetcher: NSObject {
         """, completionHandler: nil)
     }
 
+    /// Scrolls the stories tab to reveal additional story tiles.
     private func scrollStoriesTabRight() {
         webView?.evaluateJavaScript("""
             (function() {
@@ -215,6 +243,7 @@ final class WebViewFetcher: NSObject {
         """, completionHandler: nil)
     }
 
+    /// Extracts candidate story URLs directly from the stories tab.
     private func extractFromStoriesTab() {
         let script = """
         (function() {
@@ -272,6 +301,7 @@ final class WebViewFetcher: NSObject {
         }
     }
 
+    /// Opens the first visible story item in the story viewer popup.
     private func clickFirstStory() {
         let script = """
         (function() {
@@ -287,6 +317,7 @@ final class WebViewFetcher: NSObject {
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
 
+    /// Extracts URLs for the currently visible story in the popup viewer.
     private func extractContent() {
         // Extract the CURRENT visible story from the popup. Prefer the active/visible slide.
         // Fall back to global extraction if popup structure doesn't match.
@@ -397,6 +428,7 @@ final class WebViewFetcher: NSObject {
         }
     }
 
+    /// Tears down WKWebView resources after extraction completes.
     private func cleanup() {
         window?.close()
         window = nil
@@ -404,16 +436,31 @@ final class WebViewFetcher: NSObject {
     }
 }
 
+/// Signals loading state transitions from WKWebView navigation.
 extension WebViewFetcher: WKNavigationDelegate {
+    /// Called when page navigation succeeds.
+    /// - Parameters:
+    ///   - webView: Web view that finished navigation.
+    ///   - navigation: Navigation object.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadSem.signal()
     }
 
+    /// Called when committed navigation fails.
+    /// - Parameters:
+    ///   - webView: Web view that failed.
+    ///   - navigation: Navigation object.
+    ///   - error: Failure details.
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         loadError = error
         loadSem.signal()
     }
 
+    /// Called when provisional navigation (request/load start) fails.
+    /// - Parameters:
+    ///   - webView: Web view that failed.
+    ///   - navigation: Navigation object.
+    ///   - error: Failure details.
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         loadError = error
         loadSem.signal()
