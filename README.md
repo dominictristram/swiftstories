@@ -1,6 +1,6 @@
 # swiftstories
 
-`swiftstories` is a macOS Swift command-line utility that downloads publicly available Instagram stories and highlights for one or more usernames.
+`swiftstories` is a Swift command-line utility that downloads publicly available Instagram stories and highlights for one or more usernames. It was written on MacOS but should run on any platform where Swift is available.
 
 It uses anonymous public story-viewer backends and saves media to local folders.
 
