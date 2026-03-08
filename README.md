@@ -121,6 +121,67 @@ With `--chaos`, stories are saved to:
 users/<username>/stories/
 ```
 
+## Regular Download
+
+If you want to automatically download the stories of a user every day you can do this with
+launchd.
+
+Create a text file in ~/Library/LaunchAgents/com.some.identifier.swiftstories.plist as
+follows, replacing installpath with the full path of where you installed swiftstories and instagramusername
+with the instagram user you wish to regularly download stories from:
+
+```text
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <key>Label</key>
+    <string>com.some.identifier.swiftstories</string>
+
+    <key>WorkingDirectory</key>
+    <string>/installpath/swiftstories</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>swift</string>
+        <string>run</string>
+        <string>swiftstories</string>
+        <string>-u</string>
+        <string>instragramusername</string>
+        <string>--stories</string>
+    </array>
+
+    <!-- Runs once per day at 08:00 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/swiftstories.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/swiftstories.error.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+</dict>
+</plist>
+```
+
+Then, on the command line type:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.some.identifier.swiftstories.plist
+```
+
 ## Notes
 
 - This tool only works for publicly accessible content from accounts/backends that return media links.

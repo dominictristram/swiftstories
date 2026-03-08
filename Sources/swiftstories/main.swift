@@ -203,8 +203,37 @@ final class Content {
     /// Downloads all discovered story items to disk.
     /// - Parameter storiesPool: Story media URLs annotated with video metadata.
     func downloadStories(_ storiesPool: [(url: String, isVideo: Bool)]) {
-        let rootStoriesPath = (userPath as NSString).appendingPathComponent("stories")
-        let total = storiesPool.count
+        func canonicalStoryKey(for url: String) -> String {
+            var normalized = url
+            for suffix in ["", "2", "3", "4", "5", "6"] {
+                normalized = normalized.replacingOccurrences(of: "/img\(suffix).php", with: "/media\(suffix).php")
+                normalized = normalized.replacingOccurrences(of: "/video\(suffix).php", with: "/media\(suffix).php")
+            }
+            return normalized
+        }
+
+        func dedupeStories(_ items: [(url: String, isVideo: Bool)]) -> [(url: String, isVideo: Bool)] {
+            var deduped: [(url: String, isVideo: Bool)] = []
+            var indexByKey: [String: Int] = [:]
+            for item in items where !item.url.isEmpty {
+                let key = canonicalStoryKey(for: item.url)
+                if let existingIdx = indexByKey[key] {
+                    let existing = deduped[existingIdx]
+                    let existingIsImgURL = existing.url.contains("/img")
+                    let incomingIsVideoURL = item.url.contains("/video")
+                    if (item.isVideo && !existing.isVideo) || (incomingIsVideoURL && existingIsImgURL) {
+                        deduped[existingIdx] = (item.url, true)
+                    }
+                    continue
+                }
+                indexByKey[key] = deduped.count
+                deduped.append(item)
+            }
+            return deduped
+        }
+
+        let uniqueStories = dedupeStories(storiesPool)
+        let total = uniqueStories.count
 
         func upgradedVideoURL(from raw: String) -> String? {
             var upgraded = raw
@@ -230,7 +259,8 @@ final class Content {
             return request
         }
 
-        for (i, item) in storiesPool.enumerated() {
+        var downloadedCount = 0
+        for (i, item) in uniqueStories.enumerated() {
             print("\r[*] Downloading stories [\(i + 1)/\(total)]", terminator: "")
             fflush(stdout)
             var data: Data?
@@ -260,11 +290,13 @@ final class Content {
                 ext = "jpg"
             }
             let filename = String(format: "story_%03d.%@", i + 1, ext)
-            guard Self.validate(filename: filename, inPath: rootStoriesPath) else { continue }
+            guard Self.validate(filename: filename, inPath: storiesPath) else { continue }
             let destPath = (storiesPath as NSString).appendingPathComponent(filename)
             try? data.write(to: URL(fileURLWithPath: destPath))
+            downloadedCount += 1
         }
         print("")
+        print("[*] Downloaded \(downloadedCount)/\(total) stories to \(storiesPath)")
     }
 
     /// Extracts highlight group links and display names from the page HTML.
@@ -400,14 +432,33 @@ final class Content {
         var items: [(url: String, isVideo: Bool)] = []
         guard let doc = try? SwiftSoup.parse(page) else { return items }
         let links = (try? doc.select(".profile__tabs-media-item-link.show-modal[data-type='stories']")) ?? Elements()
-        var seen = Set<String>()
+        var indexByKey: [String: Int] = [:]
+
+        func canonicalStoryKey(for url: String) -> String {
+            var normalized = url
+            for suffix in ["", "2", "3", "4", "5", "6"] {
+                normalized = normalized.replacingOccurrences(of: "/img\(suffix).php", with: "/media\(suffix).php")
+                normalized = normalized.replacingOccurrences(of: "/video\(suffix).php", with: "/media\(suffix).php")
+            }
+            return normalized
+        }
+
         for el in links.array() {
             guard let content = try? el.attr("data-content"), !content.isEmpty else { continue }
-            if seen.contains(content) { continue }
             let mediaType = ((try? el.attr("data-media-type")) ?? "").lowercased()
             let filename = ((try? el.attr("data-filename")) ?? "").lowercased()
             let isVideo = mediaType == "video" || filename.hasSuffix(".mp4")
-            seen.insert(content)
+            let key = canonicalStoryKey(for: content)
+            if let existingIdx = indexByKey[key] {
+                let existing = items[existingIdx]
+                let existingIsImgURL = existing.url.contains("/img")
+                let incomingIsVideoURL = content.contains("/video")
+                if (isVideo && !existing.isVideo) || (incomingIsVideoURL && existingIsImgURL) {
+                    items[existingIdx] = (content, true)
+                }
+                continue
+            }
+            indexByKey[key] = items.count
             items.append((content, isVideo))
         }
         return items
