@@ -6,7 +6,6 @@
 //
 
 import ArgumentParser
-import AppKit
 import Foundation
 import SwiftSoup
 
@@ -127,6 +126,10 @@ struct Directories {
 
 /// Encapsulates backend parsing and media download operations for one user.
 final class Content {
+    private struct ViewerSocketToken: Decodable {
+        let token: String
+    }
+
     /// Instagram username being fetched.
     let username: String
     /// Base URL for the configured backend API.
@@ -464,6 +467,180 @@ final class Content {
         return items
     }
 
+    /// Fetches live story reels for `insta-stories-viewer` via its Socket.IO channel.
+    /// - Parameters:
+    ///   - rootPage: Initial profile HTML used to read runtime constants.
+    ///   - username: Instagram username.
+    ///   - apiBase: Backend base URL.
+    ///   - session: URL session used for HTTP and WebSocket requests.
+    ///   - debug: Enables debug logging.
+    /// - Returns: Story items with concrete media URLs, or an empty list on failure.
+    static func fetchViewerStoryItemsViaSocket(rootPage: String, username: String, apiBase: String, session: URLSession, debug: Bool) -> [(url: String, isVideo: Bool)] {
+        func firstMatch(_ pattern: String, in text: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            let range = NSRange(text.startIndex..., in: text)
+            guard let m = regex.firstMatch(in: text, range: range),
+                  let r = Range(m.range(at: 1), in: text)
+            else { return nil }
+            return String(text[r])
+        }
+
+        func encodeURIComponent(_ input: String) -> String {
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-_.!~*'()")
+            return input.addingPercentEncoding(withAllowedCharacters: allowed) ?? input
+        }
+
+        let imgPath = firstMatch(#"var\s+IMG_PATH\s*=\s*'([^']+)'"#, in: rootPage) ?? "https://cdn.insta-stories-viewer.com/img.php?url="
+        let imgPathR = firstMatch(#"var\s+IMG_PATH_R\s*=\s*'([^']+)'"#, in: rootPage) ?? imgPath
+        let userNeedsUpdate = firstMatch(#"var\s+USER_NEED_UPDATE\s*=\s*(true|false)"#, in: rootPage)?.lowercased() == "true"
+
+        let referer = "\(apiBase)/\(username)/"
+        guard let connectURL = URL(string: "\(apiBase)/connect/") else { return [] }
+
+        do {
+            var connectRequest = URLRequest(url: connectURL)
+            connectRequest.setValue(browserHeaders["User-Agent"], forHTTPHeaderField: "User-Agent")
+            connectRequest.setValue(browserHeaders["Accept"], forHTTPHeaderField: "Accept")
+            connectRequest.setValue(browserHeaders["Accept-Language"], forHTTPHeaderField: "Accept-Language")
+            connectRequest.setValue(referer, forHTTPHeaderField: "Referer")
+            let (tokenData, _) = try session.synchronousData(from: connectRequest)
+            let tokenResponse = try JSONDecoder().decode(ViewerSocketToken.self, from: tokenData)
+            let token = tokenResponse.token
+
+            guard let wsURL = URL(string: "\(apiBase)/socket.io/?EIO=4&transport=websocket") else { return [] }
+            var wsRequest = URLRequest(url: wsURL)
+            wsRequest.setValue(browserHeaders["User-Agent"], forHTTPHeaderField: "User-Agent")
+            wsRequest.setValue(browserHeaders["Accept"], forHTTPHeaderField: "Accept")
+            wsRequest.setValue(browserHeaders["Accept-Language"], forHTTPHeaderField: "Accept-Language")
+            wsRequest.setValue(referer, forHTTPHeaderField: "Referer")
+            if let host = URL(string: apiBase)?.host {
+                wsRequest.setValue("https://\(host)", forHTTPHeaderField: "Origin")
+            }
+
+            let ws = session.webSocketTask(with: wsRequest)
+            ws.resume()
+
+            let doneSem = DispatchSemaphore(value: 0)
+            var foundItems: [(url: String, isVideo: Bool)] = []
+            var hasSentSearch = false
+            var isDone = false
+            let stateLock = NSLock()
+
+            func finish() {
+                stateLock.lock()
+                defer { stateLock.unlock() }
+                if isDone { return }
+                isDone = true
+                doneSem.signal()
+            }
+
+            func send(_ text: String) {
+                ws.send(.string(text)) { _ in }
+            }
+
+            func consumeSearchResultFrame(_ text: String) -> [(url: String, isVideo: Bool)] {
+                guard text.hasPrefix("42"), text.count > 2 else { return [] }
+                let payloadText = String(text.dropFirst(2))
+                guard let payloadData = payloadText.data(using: .utf8),
+                      let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [Any],
+                      payload.count >= 2,
+                      let event = payload[0] as? String,
+                      event == "searchResult",
+                      let body = payload[1] as? [String: Any],
+                      let data = body["data"] as? [String: Any],
+                      let user = data["user"] as? [String: Any],
+                      let reels = user["reels"] as? [[String: Any]]
+                else { return [] }
+
+                let serverCode = data["serverCode"] as? Int ?? 0
+                let basePath = [2].contains(serverCode) ? imgPathR : imgPath
+                var result: [(url: String, isVideo: Bool)] = []
+
+                for reel in reels {
+                    let isVideo = (reel["is_video"] as? Bool) == true
+                    let rawVideoURL = (reel["video_url"] as? String) ?? ""
+                    let rawImageURL = (reel["display_url"] as? String) ?? ""
+                    let raw = (isVideo && !rawVideoURL.isEmpty) ? rawVideoURL : rawImageURL
+                    guard !raw.isEmpty else { continue }
+                    let fullURL = basePath + encodeURIComponent(raw)
+                    result.append((fullURL, isVideo))
+                }
+                return result
+            }
+
+            func receiveLoop(_ depth: Int = 0) {
+                if depth > 200 {
+                    finish()
+                    return
+                }
+                ws.receive { result in
+                    switch result {
+                    case .failure:
+                        finish()
+                    case .success(let message):
+                        let text: String
+                        switch message {
+                        case .string(let s): text = s
+                        case .data(let d): text = String(data: d, encoding: .utf8) ?? ""
+                        @unknown default: text = ""
+                        }
+
+                        if text.hasPrefix("0{") {
+                            send("40")
+                            receiveLoop(depth + 1)
+                            return
+                        }
+
+                        if text.hasPrefix("40"), !hasSentSearch {
+                            hasSentSearch = true
+                            let ts = Int(Date().timeIntervalSince1970 * 1000)
+                            let payload = #"{"username":"\#(username)","date":\#(ts),"token":"\#(token)"}"#
+                            if userNeedsUpdate {
+                                send(#"42["search",\#(payload)]"#)
+                            } else {
+                                send(#"42["fakeSearch",\#(payload)]"#)
+                            }
+                            send(#"42["search",\#(payload)]"#)
+                            send(#"42["fakeSearch",\#(payload)]"#)
+                            receiveLoop(depth + 1)
+                            return
+                        }
+
+                        if text == "2" {
+                            send("3")
+                            receiveLoop(depth + 1)
+                            return
+                        }
+
+                        let parsed = consumeSearchResultFrame(text)
+                        if !parsed.isEmpty {
+                            foundItems = parsed
+                            finish()
+                            return
+                        }
+
+                        receiveLoop(depth + 1)
+                    }
+                }
+            }
+
+            receiveLoop()
+            _ = doneSem.wait(timeout: .now() + 25)
+            ws.cancel(with: .normalClosure, reason: nil)
+
+            if debug {
+                print(" [debug: socket extracted \(foundItems.count) story item(s)]")
+            }
+            return foundItems
+        } catch {
+            if debug {
+                print(" [debug: socket extraction failed: \(error.localizedDescription)]")
+            }
+            return []
+        }
+    }
+
     /// Computes a local filename for a downloaded media item.
     /// - Parameters:
     ///   - link: Original media link.
@@ -621,67 +798,54 @@ struct SwiftstoriesCommand: ParsableCommand {
             guard let url = URL(string: link) else { continue }
 
             let rootPage: String
-            let storyItems: [(url: String, isVideo: Bool)]
+            var storyItems: [(url: String, isVideo: Bool)]
 
-            if apiBase.contains("insta-stories-viewer") {
-                NSApplication.shared.setActivationPolicy(.accessory)
-                print("\n[*] Loading \(user)…", terminator: "")
-                fflush(stdout)
-                let lock = NSLock()
-                var done = false
-                var fetchedRootPage = ""
-                var fetchedItems: [(url: String, isVideo: Bool)] = []
-                let fetcher = WebViewFetcher()
-                let debugFlag = debug
-                DispatchQueue.global().async {
-                    let (items, html) = fetcher.fetchStoryURLs(from: url)
-                    lock.lock()
-                    fetchedRootPage = html
-                    fetchedItems = items
-                    done = true
-                    lock.unlock()
+            print("\n[*] Loading \(user)…", terminator: "")
+            fflush(stdout)
+            do {
+                var request = URLRequest(url: url)
+                request.setValue(browserHeaders["User-Agent"], forHTTPHeaderField: "User-Agent")
+                request.setValue(browserHeaders["Accept"], forHTTPHeaderField: "Accept")
+                request.setValue(browserHeaders["Accept-Language"], forHTTPHeaderField: "Accept-Language")
+                request.setValue(apiBase + "/", forHTTPHeaderField: "Referer")
+                let (data, response) = try session.synchronousData(from: request)
+                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                    ANSI.printRed("[!] Failed to fetch page for '\(user)': HTTP \(http.statusCode)")
+                    continue
                 }
-                while true {
-                    lock.lock()
-                    let d = done
-                    lock.unlock()
-                    if d { break }
-                    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.5))
+                guard let text = String(data: data, encoding: .utf8) else {
+                    ANSI.printRed("[!] Failed to fetch page for '\(user)': Could not decode response")
+                    continue
                 }
-                rootPage = fetchedRootPage
-                let parsedFromHTML = Content.parsingViewerStoryItems(fetchedRootPage)
-                storyItems = parsedFromHTML.isEmpty ? fetchedItems : parsedFromHTML
-                if debugFlag, !rootPage.isEmpty {
+                rootPage = text
+                if apiBase.contains("insta-stories-viewer") {
+                    storyItems = Content.parsingViewerStoryItems(text)
+                    if storyItems.isEmpty {
+                        storyItems = Content.fetchViewerStoryItemsViaSocket(
+                            rootPage: text,
+                            username: user,
+                            apiBase: apiBase,
+                            session: session,
+                            debug: debug
+                        )
+                    }
+                } else {
+                    storyItems = []
+                }
+                if debug, !rootPage.isEmpty {
                     try? rootPage.write(toFile: "/tmp/swiftstories_debug.html", atomically: true, encoding: .utf8)
                     print(" [debug: saved HTML to /tmp/swiftstories_debug.html]")
-                    print(" [debug: extracted \(storyItems.count) story item(s)]")
-                    for (idx, item) in storyItems.enumerated() {
-                        print(" [debug] \(idx + 1). \(item.isVideo ? "video" : "image") \(item.url)")
+                    if apiBase.contains("insta-stories-viewer") {
+                        print(" [debug: extracted \(storyItems.count) story item(s)]")
+                        for (idx, item) in storyItems.enumerated() {
+                            print(" [debug] \(idx + 1). \(item.isVideo ? "video" : "image") \(item.url)")
+                        }
                     }
                 }
                 print(" done")
-            } else {
-                do {
-                    var request = URLRequest(url: url)
-                    request.setValue(browserHeaders["User-Agent"], forHTTPHeaderField: "User-Agent")
-                    request.setValue(browserHeaders["Accept"], forHTTPHeaderField: "Accept")
-                    request.setValue(browserHeaders["Accept-Language"], forHTTPHeaderField: "Accept-Language")
-                    request.setValue(apiBase + "/", forHTTPHeaderField: "Referer")
-                    let (data, response) = try session.synchronousData(from: request)
-                    if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                        ANSI.printRed("[!] Failed to fetch page for '\(user)': HTTP \(http.statusCode)")
-                        continue
-                    }
-                    guard let text = String(data: data, encoding: .utf8) else {
-                        ANSI.printRed("[!] Failed to fetch page for '\(user)': Could not decode response")
-                        continue
-                    }
-                    rootPage = text
-                    storyItems = []
-                } catch {
-                    ANSI.printRed("[!] Failed to fetch page for '\(user)': \(error.localizedDescription)")
-                    continue
-                }
+            } catch {
+                ANSI.printRed("[!] Failed to fetch page for '\(user)': \(error.localizedDescription)")
+                continue
             }
 
             let userContent = Content(username: user, rootPage: rootPage, api: apiBase, output: output, chaos: chaos, session: session)
@@ -692,7 +856,13 @@ struct SwiftstoriesCommand: ParsableCommand {
             if stories {
                 let storiesPool: [(url: String, isVideo: Bool)]
                 if apiBase.contains("insta-stories-viewer") {
-                    storiesPool = storyItems
+                    if !storyItems.isEmpty {
+                        storiesPool = storyItems
+                    } else if let pool = userContent.getStories() {
+                        storiesPool = pool.map { ($0, false) }
+                    } else {
+                        storiesPool = []
+                    }
                 } else if let pool = userContent.getStories() {
                     storiesPool = pool.map { ($0, false) }
                 } else {

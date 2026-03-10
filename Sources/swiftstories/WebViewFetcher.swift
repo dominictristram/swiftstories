@@ -173,16 +173,14 @@ final class WebViewFetcher: NSObject {
         return result
     }
 
-    /// Stores final extraction result and schedules web view cleanup.
+    /// Stores final extraction result and tears down web view resources.
     /// - Parameters:
     ///   - items: Story items to return.
     ///   - html: Last captured page HTML.
     private func finish(_ items: [(url: String, isVideo: Bool)], _ html: String) {
+        cleanup()
         result = (items, html)
         resultSem.signal()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.cleanup()
-        }
     }
 
     /// Configures an off-screen WKWebView and begins loading the target URL.
@@ -479,6 +477,9 @@ final class WebViewFetcher: NSObject {
 
     /// Tears down WKWebView resources after extraction completes.
     private func cleanup() {
+        webView?.navigationDelegate = nil
+        webView?.stopLoading()
+        webView?.removeFromSuperview()
         window?.close()
         window = nil
         webView = nil
