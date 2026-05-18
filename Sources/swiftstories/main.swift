@@ -85,10 +85,10 @@ struct Directories {
         highlightsPath = (userPath as NSString).appendingPathComponent("highlights")
 
         let formatter = DateFormatter()
-        formatter.dateFormat = "dd-MMMM-yyyy"
-        let dateDir = formatter.string(from: Date())
+        formatter.dateFormat = "yyyy/MM/dd"
+        let datePath = formatter.string(from: Date())
         let storiesBase = (userPath as NSString).appendingPathComponent("stories")
-        storiesPath = (storiesBase as NSString).appendingPathComponent(dateDir)
+        storiesPath = (storiesBase as NSString).appendingPathComponent(datePath)
     }
 
     /// Ensures required output directories exist.

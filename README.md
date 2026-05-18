@@ -99,9 +99,11 @@ Default structure:
 users/
   <username>/
     stories/
-      <dd-MMMM-yyyy>/
-        story_001.jpg|mp4
-        story_002.jpg|mp4
+      <yyyy>/
+        <MM>/
+          <dd>/
+            story_001.jpg|mp4
+            story_002.jpg|mp4
     highlights/
       <highlight_name>_<id>/
         ...
