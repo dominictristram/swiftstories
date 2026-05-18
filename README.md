@@ -10,7 +10,6 @@ It uses anonymous public story-viewer backends and saves media to local folders.
 - Download highlights (`--highlights`)
 - Handle multiple users in a single run (`-u user1 -u user2`)
 - Save output to a custom directory (`--output`)
-- Optional "chaos" mode to keep stories in one folder (`--chaos`)
 - Configurable backend API (`--api`)
 
 ## Requirements
@@ -65,12 +64,6 @@ Set custom output directory:
 swift run swiftstories -u nasa --stories --output ./downloads
 ```
 
-Store stories in a single directory (no date subfolder):
-
-```bash
-swift run swiftstories -u nasa --stories --chaos
-```
-
 Use a different backend endpoint:
 
 ```bash
@@ -86,7 +79,7 @@ swift run swiftstories -u nasa --stories --debug
 ## CLI options
 
 ```text
-USAGE: swiftstories [--users <users> ...] [--stories] [--highlights] [--output <output>] [--api <api>] [--chaos] [--debug]
+USAGE: swiftstories [--users <users> ...] [--stories] [--highlights] [--output <output>] [--api <api>] [--debug]
 
 OPTIONS:
   -u, --users <users>     Instagram username(s)
@@ -94,7 +87,6 @@ OPTIONS:
   -H, --highlights        Download highlights
   -o, --output <output>   Directory for data storage
   --api <api>             Backend API base URL (default: https://insta-stories-viewer.com)
-  -c, --chaos             Save stories in one directory
   --debug                 Save page HTML to /tmp/swiftstories_debug.html for debugging
   -h, --help              Show help information
 ```
@@ -113,12 +105,6 @@ users/
     highlights/
       <highlight_name>_<id>/
         ...
-```
-
-With `--chaos`, stories are saved to:
-
-```text
-users/<username>/stories/
 ```
 
 ## Regular Download

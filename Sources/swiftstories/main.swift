@@ -78,22 +78,17 @@ struct Directories {
     /// - Parameters:
     ///   - username: Instagram username being processed.
     ///   - output: Optional custom output directory.
-    ///   - chaos: Whether stories should skip date-based subfolders.
-    init(username: String, output: String?, chaos: Bool) {
+    init(username: String, output: String?) {
         self.username = username
         rootPath = output ?? "users"
         userPath = (rootPath as NSString).appendingPathComponent(username)
         highlightsPath = (userPath as NSString).appendingPathComponent("highlights")
 
-        if chaos {
-            storiesPath = (userPath as NSString).appendingPathComponent("stories")
-        } else {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "dd-MMMM-yyyy"
-            let dateDir = formatter.string(from: Date())
-            let storiesBase = (userPath as NSString).appendingPathComponent("stories")
-            storiesPath = (storiesBase as NSString).appendingPathComponent(dateDir)
-        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd-MMMM-yyyy"
+        let dateDir = formatter.string(from: Date())
+        let storiesBase = (userPath as NSString).appendingPathComponent("stories")
+        storiesPath = (storiesBase as NSString).appendingPathComponent(dateDir)
     }
 
     /// Ensures required output directories exist.
@@ -149,13 +144,12 @@ final class Content {
     ///   - rootPage: Initial HTML page content.
     ///   - api: Backend API base URL.
     ///   - output: Optional output root path.
-    ///   - chaos: Whether to store stories without date subfolder.
     ///   - session: URL session to use for requests.
-    init(username: String, rootPage: String, api: String, output: String?, chaos: Bool, session: URLSession) {
+    init(username: String, rootPage: String, api: String, output: String?, session: URLSession) {
         self.username = username
         self.rootPage = rootPage
         self.api = api
-        self.directories = Directories(username: username, output: output, chaos: chaos)
+        self.directories = Directories(username: username, output: output)
         self.session = session
     }
 
@@ -761,10 +755,6 @@ struct SwiftstoriesCommand: ParsableCommand {
     @Option(name: .long, help: "Backend API base URL")
     var api: String = "https://insta-stories-viewer.com"
 
-    /// Stores stories in a single folder instead of date partitioning.
-    @Flag(name: [.short, .long], help: "Save stories in one directory")
-    var chaos: Bool = false
-
     /// Writes fetched HTML to `/tmp/swiftstories_debug.html`.
     @Flag(name: .long, help: "Save page HTML to /tmp/swiftstories_debug.html for debugging")
     var debug: Bool = false
@@ -848,10 +838,10 @@ struct SwiftstoriesCommand: ParsableCommand {
                 continue
             }
 
-            let userContent = Content(username: user, rootPage: rootPage, api: apiBase, output: output, chaos: chaos, session: session)
+            let userContent = Content(username: user, rootPage: rootPage, api: apiBase, output: output, session: session)
             guard userContent.exists() else { continue }
 
-            let dirs = Directories(username: user, output: output, chaos: chaos)
+            let dirs = Directories(username: user, output: output)
 
             if stories {
                 let storiesPool: [(url: String, isVideo: Bool)]
